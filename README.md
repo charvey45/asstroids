@@ -2,6 +2,8 @@
 
 A simple Python take on Asteroids built with `pygame`.
 
+This version uses generated retro sound effects and particle bursts, so there are no external asset files to manage.
+
 ## Plan
 
 1. Build a single-window arcade loop with smooth keyboard controls.
@@ -11,6 +13,7 @@ A simple Python take on Asteroids built with `pygame`.
 
 ## Controls
 
+- `Enter`: start from the title screen or restart after game over
 - `Left` / `Right`: rotate
 - `Up`: thrust
 - `Space`: fire

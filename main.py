@@ -1,6 +1,9 @@
+import json
 import math
 import random
+from array import array
 from dataclasses import dataclass, field
+from pathlib import Path
 
 import pygame
 
@@ -12,6 +15,8 @@ BACKGROUND = (6, 10, 18)
 FOREGROUND = (232, 240, 255)
 ACCENT = (255, 191, 105)
 WARNING = (255, 107, 107)
+MUTED = (170, 181, 205)
+SAVE_PATH = Path(__file__).with_name(".astroids-save.json")
 
 SHIP_TURN_SPEED = 220
 SHIP_ACCELERATION = 320
@@ -36,6 +41,7 @@ SCORE_VALUES = {
     2: 50,
     1: 100,
 }
+PARTICLE_DRAG = 0.96
 
 
 @dataclass
@@ -67,6 +73,23 @@ class Ship:
     lives: int = 3
     cooldown: float = 0.0
     invulnerability: float = RESPAWN_INVULN
+
+
+@dataclass
+class Particle:
+    position: pygame.Vector2
+    velocity: pygame.Vector2
+    ttl: float
+    max_ttl: float
+    color: tuple[int, int, int]
+    radius: float
+
+
+@dataclass
+class SoundBank:
+    shoot: pygame.mixer.Sound | None
+    hit: pygame.mixer.Sound | None
+    ship_hit: pygame.mixer.Sound | None
 
 
 def wrap_position(position: pygame.Vector2) -> None:
@@ -130,6 +153,94 @@ def ship_points(ship: Ship) -> list[tuple[float, float]]:
     ]
 
 
+def build_tone(
+    frequency: float,
+    duration: float,
+    *,
+    volume: float,
+    waveform: str = "sine",
+    sweep: float = 0.0,
+    noise_mix: float = 0.0,
+) -> pygame.mixer.Sound | None:
+    mixer_settings = pygame.mixer.get_init()
+    if mixer_settings is None:
+        return None
+
+    sample_rate, _, channels = mixer_settings
+    sample_count = max(1, int(duration * sample_rate))
+    samples = array("h")
+    phase = 0.0
+
+    for sample_index in range(sample_count):
+        progress = sample_index / sample_count
+        current_frequency = max(40.0, frequency + sweep * progress)
+        phase += (2 * math.pi * current_frequency) / sample_rate
+
+        if waveform == "square":
+            tone = 1.0 if math.sin(phase) >= 0.0 else -1.0
+        elif waveform == "triangle":
+            tone = (2.0 / math.pi) * math.asin(math.sin(phase))
+        elif waveform == "noise":
+            tone = random.uniform(-1.0, 1.0)
+        else:
+            tone = math.sin(phase)
+
+        if noise_mix:
+            tone = (tone * (1.0 - noise_mix)) + (random.uniform(-1.0, 1.0) * noise_mix)
+
+        envelope = (1.0 - progress) ** 1.8
+        value = max(-1.0, min(1.0, tone * volume * envelope))
+        sample = int(value * 32767)
+        samples.append(sample)
+
+    if channels == 2:
+        stereo_samples = array("h")
+        for sample in samples:
+            stereo_samples.append(sample)
+            stereo_samples.append(sample)
+        return pygame.mixer.Sound(buffer=stereo_samples.tobytes())
+
+    return pygame.mixer.Sound(buffer=samples.tobytes())
+
+
+def build_sound_bank() -> SoundBank:
+    return SoundBank(
+        shoot=build_tone(720, 0.09, volume=0.18, waveform="square", sweep=-240),
+        hit=build_tone(160, 0.2, volume=0.28, waveform="triangle", sweep=-70, noise_mix=0.2),
+        ship_hit=build_tone(110, 0.45, volume=0.32, waveform="noise", sweep=-60, noise_mix=0.55),
+    )
+
+
+def play_sound(sound: pygame.mixer.Sound | None) -> None:
+    if sound is not None:
+        sound.play()
+
+
+def emit_particles(
+    position: pygame.Vector2,
+    count: int,
+    color: tuple[int, int, int],
+    *,
+    speed_range: tuple[float, float],
+    ttl_range: tuple[float, float],
+    radius_range: tuple[float, float],
+) -> list[Particle]:
+    particles: list[Particle] = []
+    for _ in range(count):
+        lifetime = random.uniform(*ttl_range)
+        particles.append(
+            Particle(
+                position=position.copy(),
+                velocity=heading_vector(random.uniform(0, 360)) * random.uniform(*speed_range),
+                ttl=lifetime,
+                max_ttl=lifetime,
+                color=color,
+                radius=random.uniform(*radius_range),
+            )
+        )
+    return particles
+
+
 def draw_wrapped_circle(surface: pygame.Surface, color: tuple[int, int, int], position: pygame.Vector2, radius: int) -> None:
     for dx in (-WIDTH, 0, WIDTH):
         for dy in (-HEIGHT, 0, HEIGHT):
@@ -168,21 +279,78 @@ def reset_ship() -> Ship:
     )
 
 
+def create_session() -> tuple[Ship, list[Bullet], list[Particle], int, int, list[Asteroid]]:
+    ship = reset_ship()
+    level = 1
+    score = 0
+    asteroids = create_level(level, ship.position)
+    return ship, [], [], level, score, asteroids
+
+
+def load_best_score() -> int:
+    try:
+        payload = json.loads(SAVE_PATH.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return 0
+
+    best_score = payload.get("best_score", 0)
+    if isinstance(best_score, int) and best_score >= 0:
+        return best_score
+    return 0
+
+
+def save_best_score(best_score: int) -> None:
+    try:
+        SAVE_PATH.write_text(
+            json.dumps({"best_score": max(0, int(best_score))}, indent=2),
+            encoding="utf-8",
+        )
+    except OSError:
+        pass
+
+
+def update_particles(particles: list[Particle], dt: float) -> None:
+    for particle in particles[:]:
+        particle.position += particle.velocity * dt
+        particle.velocity *= PARTICLE_DRAG
+        wrap_position(particle.position)
+        particle.ttl -= dt
+        if particle.ttl <= 0:
+            particles.remove(particle)
+
+
+def draw_particles(surface: pygame.Surface, particles: list[Particle]) -> None:
+    for particle in particles:
+        life_ratio = particle.ttl / particle.max_ttl
+        radius = max(1, int(particle.radius * (0.4 + life_ratio)))
+        color = tuple(int(channel * (0.25 + 0.75 * life_ratio)) for channel in particle.color)
+        draw_wrapped_circle(surface, color, particle.position, radius)
+
+
+def update_asteroids(asteroids: list[Asteroid], dt: float) -> None:
+    for asteroid in asteroids:
+        asteroid.position += asteroid.velocity * dt
+        asteroid.angle += asteroid.spin * dt
+        wrap_position(asteroid.position)
+
+
 def main() -> None:
+    pygame.mixer.pre_init(44100, -16, 1, 512)
     pygame.init()
     pygame.display.set_caption("Astroids")
     screen = pygame.display.set_mode((WIDTH, HEIGHT))
     clock = pygame.time.Clock()
     hud_font = pygame.font.SysFont("consolas", 24)
     title_font = pygame.font.SysFont("consolas", 36, bold=True)
+    hero_font = pygame.font.SysFont("consolas", 72, bold=True)
+    sound_bank = build_sound_bank()
 
-    ship = reset_ship()
-    bullets: list[Bullet] = []
-    level = 1
-    score = 0
-    asteroids = create_level(level, ship.position)
+    ship, bullets, particles, level, score, asteroids = create_session()
+    attract_asteroids = [spawn_asteroid(random.choice((2, 2, 3, 3))) for _ in range(6)]
+    best_score = load_best_score()
     running = True
-    game_over = False
+    state = "title"
+    new_high_score = False
 
     while running:
         dt = clock.tick(FPS) / 1000
@@ -191,17 +359,20 @@ def main() -> None:
                 running = False
             elif event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE:
                 running = False
-            elif event.type == pygame.KEYDOWN and game_over and event.key == pygame.K_r:
-                ship = reset_ship()
-                bullets.clear()
-                level = 1
-                score = 0
-                asteroids = create_level(level, ship.position)
-                game_over = False
+            elif event.type == pygame.KEYDOWN and state == "title" and event.key in (pygame.K_RETURN, pygame.K_SPACE):
+                ship, bullets, particles, level, score, asteroids = create_session()
+                state = "playing"
+                new_high_score = False
+            elif event.type == pygame.KEYDOWN and state == "game_over" and event.key in (pygame.K_r, pygame.K_RETURN, pygame.K_SPACE):
+                ship, bullets, particles, level, score, asteroids = create_session()
+                state = "playing"
+                new_high_score = False
 
         keys = pygame.key.get_pressed()
 
-        if not game_over:
+        if state == "title":
+            update_asteroids(attract_asteroids, dt)
+        elif state == "playing":
             if keys[pygame.K_LEFT]:
                 ship.angle -= SHIP_TURN_SPEED * dt
             if keys[pygame.K_RIGHT]:
@@ -224,6 +395,7 @@ def main() -> None:
                     )
                 )
                 ship.cooldown = BULLET_COOLDOWN
+                play_sound(sound_bank.shoot)
 
             for bullet in bullets[:]:
                 bullet.position += bullet.velocity * dt
@@ -232,10 +404,7 @@ def main() -> None:
                 if bullet.ttl <= 0:
                     bullets.remove(bullet)
 
-            for asteroid in asteroids:
-                asteroid.position += asteroid.velocity * dt
-                asteroid.angle += asteroid.spin * dt
-                wrap_position(asteroid.position)
+            update_asteroids(asteroids, dt)
 
             spawned: list[Asteroid] = []
             for bullet in bullets[:]:
@@ -253,6 +422,27 @@ def main() -> None:
                 bullets.remove(bullet)
                 asteroids.remove(hit)
                 score += SCORE_VALUES[hit.size]
+                particles.extend(
+                    emit_particles(
+                        hit.position,
+                        6 + (hit.size * 3),
+                        ACCENT,
+                        speed_range=(45, 170),
+                        ttl_range=(0.24, 0.55),
+                        radius_range=(1.5, 3.4),
+                    )
+                )
+                particles.extend(
+                    emit_particles(
+                        hit.position,
+                        5 + (hit.size * 2),
+                        FOREGROUND,
+                        speed_range=(35, 120),
+                        ttl_range=(0.18, 0.45),
+                        radius_range=(1.2, 2.8),
+                    )
+                )
+                play_sound(sound_bank.hit)
 
                 if hit.size > 1:
                     for direction in (-30, 30):
@@ -276,9 +466,36 @@ def main() -> None:
             if ship.invulnerability == 0.0:
                 for asteroid in asteroids:
                     if distance_with_wrap(ship.position, asteroid.position) < asteroid.radius + SHIP_RADIUS - 3:
+                        particles.extend(
+                            emit_particles(
+                                ship.position,
+                                18,
+                                WARNING,
+                                speed_range=(65, 220),
+                                ttl_range=(0.35, 0.9),
+                                radius_range=(2.0, 4.2),
+                            )
+                        )
+                        particles.extend(
+                            emit_particles(
+                                ship.position,
+                                10,
+                                ACCENT,
+                                speed_range=(40, 160),
+                                ttl_range=(0.25, 0.7),
+                                radius_range=(1.5, 3.5),
+                            )
+                        )
+                        play_sound(sound_bank.ship_hit)
                         ship.lives -= 1
                         if ship.lives <= 0:
-                            game_over = True
+                            state = "game_over"
+                            if score > best_score:
+                                best_score = score
+                                save_best_score(best_score)
+                                new_high_score = True
+                            else:
+                                new_high_score = False
                         else:
                             preserved_lives = ship.lives
                             ship = reset_ship()
@@ -286,19 +503,27 @@ def main() -> None:
                         bullets.clear()
                         break
 
-            if not asteroids and not game_over:
+            if not asteroids and state == "playing":
                 level += 1
                 asteroids = create_level(level, ship.position)
+        elif state == "game_over":
+            update_asteroids(asteroids, dt)
 
+        update_particles(particles, dt)
         screen.fill(BACKGROUND)
 
-        for asteroid in asteroids:
+        visible_asteroids = attract_asteroids if state == "title" else asteroids
+
+        for asteroid in visible_asteroids:
             draw_wrapped_polygon(screen, FOREGROUND, asteroid_screen_points(asteroid), asteroid.position)
 
-        for bullet in bullets:
-            draw_wrapped_circle(screen, ACCENT, bullet.position, 3)
+        if state != "title":
+            for bullet in bullets:
+                draw_wrapped_circle(screen, ACCENT, bullet.position, 3)
 
-        if not game_over:
+            draw_particles(screen, particles)
+
+        if state == "playing":
             flicker = ship.invulnerability > 0 and int(pygame.time.get_ticks() / 120) % 2 == 0
             if not flicker:
                 draw_wrapped_polygon(screen, FOREGROUND, ship_points(ship), ship.position)
@@ -320,28 +545,52 @@ def main() -> None:
                 ]
                 pygame.draw.polygon(screen, ACCENT, flame, width=2)
 
-        score_text = hud_font.render(f"Score {score:05d}", True, FOREGROUND)
-        lives_text = hud_font.render(f"Lives {ship.lives}", True, FOREGROUND)
-        level_text = hud_font.render(f"Level {level}", True, FOREGROUND)
-        help_text = hud_font.render("Arrows move, Space fires, Esc quits", True, (170, 181, 205))
+        if state != "title":
+            score_text = hud_font.render(f"Score {score:05d}", True, FOREGROUND)
+            best_text = hud_font.render(f"Best {best_score:05d}", True, FOREGROUND)
+            lives_text = hud_font.render(f"Lives {ship.lives}", True, FOREGROUND)
+            level_text = hud_font.render(f"Level {level}", True, FOREGROUND)
+            help_text = hud_font.render("Arrows move, Space fires, Esc quits", True, MUTED)
 
-        screen.blit(score_text, (24, 20))
-        screen.blit(lives_text, (24, 50))
-        screen.blit(level_text, (24, 80))
-        screen.blit(help_text, (24, HEIGHT - 42))
+            screen.blit(score_text, (24, 20))
+            screen.blit(best_text, (24, 50))
+            screen.blit(lives_text, (24, 80))
+            screen.blit(level_text, (24, 110))
+            screen.blit(help_text, (24, HEIGHT - 42))
 
-        if game_over:
+        if state == "title":
+            overlay = pygame.Surface((WIDTH, HEIGHT), pygame.SRCALPHA)
+            overlay.fill((2, 4, 8, 150))
+            screen.blit(overlay, (0, 0))
+
+            title = hero_font.render("ASTROIDS", True, FOREGROUND)
+            subtitle = hud_font.render("A tiny arcade field with local score tracking", True, ACCENT)
+            prompt = hud_font.render("Press Enter or Space to start", True, FOREGROUND)
+            best = title_font.render(f"Best Score {best_score:05d}", True, FOREGROUND)
+            controls = hud_font.render("Left / Right rotate   Up thrust   Space fire   Esc quit", True, MUTED)
+
+            screen.blit(title, title.get_rect(center=(WIDTH / 2, HEIGHT / 2 - 120)))
+            screen.blit(subtitle, subtitle.get_rect(center=(WIDTH / 2, HEIGHT / 2 - 56)))
+            screen.blit(best, best.get_rect(center=(WIDTH / 2, HEIGHT / 2 + 12)))
+            screen.blit(prompt, prompt.get_rect(center=(WIDTH / 2, HEIGHT / 2 + 72)))
+            screen.blit(controls, controls.get_rect(center=(WIDTH / 2, HEIGHT - 72)))
+
+        if state == "game_over":
             overlay = pygame.Surface((WIDTH, HEIGHT), pygame.SRCALPHA)
             overlay.fill((2, 4, 8, 170))
             screen.blit(overlay, (0, 0))
 
             title = title_font.render("Game Over", True, WARNING)
-            retry = hud_font.render("Press R to restart", True, FOREGROUND)
+            retry = hud_font.render("Press Enter, Space, or R to restart", True, FOREGROUND)
             final_score = hud_font.render(f"Final score: {score}", True, FOREGROUND)
+            best = hud_font.render(f"Best score: {best_score}", True, FOREGROUND)
+            banner = hud_font.render("New high score!" if new_high_score else "Try to beat your best run", True, ACCENT)
 
             screen.blit(title, title.get_rect(center=(WIDTH / 2, HEIGHT / 2 - 40)))
-            screen.blit(final_score, final_score.get_rect(center=(WIDTH / 2, HEIGHT / 2 + 4)))
-            screen.blit(retry, retry.get_rect(center=(WIDTH / 2, HEIGHT / 2 + 44)))
+            screen.blit(final_score, final_score.get_rect(center=(WIDTH / 2, HEIGHT / 2 + 2)))
+            screen.blit(best, best.get_rect(center=(WIDTH / 2, HEIGHT / 2 + 36)))
+            screen.blit(banner, banner.get_rect(center=(WIDTH / 2, HEIGHT / 2 + 70)))
+            screen.blit(retry, retry.get_rect(center=(WIDTH / 2, HEIGHT / 2 + 108)))
 
         pygame.display.flip()
 
