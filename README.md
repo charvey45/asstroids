@@ -1,6 +1,6 @@
-# Astroids
+# Asteroids AI Demo
 
-`Astroids` is a compact arcade game built with Python and `pygame`. It is intentionally small, easy to read, and polished enough to show how an AI coding agent can help turn a rough idea into a working project through short iterative requests.
+`Asteroids AI Demo` is a compact arcade game built with Python and `pygame`. It is intentionally small, easy to read, and polished enough to show how an AI coding agent can help turn a rough idea into a working project through short iterative requests.
 
 This repo is useful as both:
 
@@ -32,15 +32,15 @@ The result is a repo that is small enough to understand quickly, but complete en
 
 ### Title Screen
 
-![Astroids title screen](docs/screenshots/title-screen.png)
+![Asteroids title screen](docs/screenshots/title-screen.png)
 
 ### Gameplay
 
-![Astroids gameplay screenshot](docs/screenshots/gameplay-screen.png)
+![Asteroids gameplay screenshot](docs/screenshots/gameplay-screen.png)
 
 ### Game Over
 
-![Astroids game over screen](docs/screenshots/game-over-screen.png)
+![Asteroids game over screen](docs/screenshots/game-over-screen.png)
 
 ## AI-Assisted Workflow
 
@@ -62,7 +62,7 @@ More detail is in [AI_COLLABORATION.md](AI_COLLABORATION.md).
 - Language: Python 3.11+
 - Library: `pygame`
 - Main entry point: [main.py](main.py)
-- Local save file: `.astroids-save.json`
+- Local save file: `.asteroids-save.json`
 
 The game logic currently lives in a single file on purpose. For a larger project, I would split rendering, entities, audio, and persistence into separate modules, but keeping it compact makes the implementation easy to inspect in a portfolio setting.
 

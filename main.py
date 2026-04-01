@@ -16,7 +16,8 @@ FOREGROUND = (232, 240, 255)
 ACCENT = (255, 191, 105)
 WARNING = (255, 107, 107)
 MUTED = (170, 181, 205)
-SAVE_PATH = Path(__file__).with_name(".astroids-save.json")
+SAVE_PATH = Path(__file__).with_name(".asteroids-save.json")
+LEGACY_SAVE_PATH = Path(__file__).with_name(".astroids-save.json")
 
 SHIP_TURN_SPEED = 220
 SHIP_ACCELERATION = 320
@@ -324,15 +325,22 @@ def create_session() -> tuple[Ship, list[Bullet], list[Particle], int, int, list
     return ship, [], [], level, score, asteroids
 
 
-def load_save_data() -> dict[str, object]:
+def read_save_payload(path: Path) -> dict[str, object]:
     try:
-        payload = json.loads(SAVE_PATH.read_text(encoding="utf-8"))
+        payload = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         return {}
 
     if isinstance(payload, dict):
         return payload
     return {}
+
+
+def load_save_data() -> dict[str, object]:
+    payload = read_save_payload(SAVE_PATH)
+    if payload:
+        return payload
+    return read_save_payload(LEGACY_SAVE_PATH)
 
 
 def load_best_score(payload: dict[str, object]) -> int:
@@ -362,22 +370,28 @@ def load_sound_settings(payload: dict[str, object]) -> SoundSettings:
 
 
 def save_progress(best_score: int, sound_settings: SoundSettings) -> None:
+    payload = {
+        "best_score": max(0, int(best_score)),
+        "sound": {
+            "enabled": sound_settings.enabled,
+            "volume": round(clamp(sound_settings.volume, MIN_VOLUME, MAX_VOLUME), 2),
+        },
+    }
+    saved = False
     try:
         SAVE_PATH.write_text(
-            json.dumps(
-                {
-                    "best_score": max(0, int(best_score)),
-                    "sound": {
-                        "enabled": sound_settings.enabled,
-                        "volume": round(clamp(sound_settings.volume, MIN_VOLUME, MAX_VOLUME), 2),
-                    },
-                },
-                indent=2,
-            ),
+            json.dumps(payload, indent=2),
             encoding="utf-8",
         )
+        saved = True
     except OSError:
         pass
+
+    if saved and LEGACY_SAVE_PATH.exists() and LEGACY_SAVE_PATH != SAVE_PATH:
+        try:
+            LEGACY_SAVE_PATH.unlink()
+        except OSError:
+            pass
 
 
 def update_particles(particles: list[Particle], dt: float) -> None:
@@ -408,7 +422,7 @@ def update_asteroids(asteroids: list[Asteroid], dt: float) -> None:
 def main() -> None:
     pygame.mixer.pre_init(44100, -16, 1, 512)
     pygame.init()
-    pygame.display.set_caption("Astroids")
+    pygame.display.set_caption("Asteroids")
     screen = pygame.display.set_mode((WIDTH, HEIGHT))
     clock = pygame.time.Clock()
     hud_font = pygame.font.SysFont("consolas", 24)
@@ -650,7 +664,7 @@ def main() -> None:
             overlay.fill((2, 4, 8, 150))
             screen.blit(overlay, (0, 0))
 
-            title = hero_font.render("ASTROIDS", True, FOREGROUND)
+            title = hero_font.render("ASTEROIDS", True, FOREGROUND)
             subtitle = hud_font.render("A tiny arcade field with local score tracking", True, ACCENT)
             prompt = hud_font.render("Press Enter or Space to start", True, FOREGROUND)
             best = title_font.render(f"Best Score {best_score:05d}", True, FOREGROUND)
