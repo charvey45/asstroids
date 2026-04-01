@@ -42,6 +42,10 @@ SCORE_VALUES = {
     1: 100,
 }
 PARTICLE_DRAG = 0.96
+DEFAULT_VOLUME = 0.10
+VOLUME_STEP = 0.05
+MIN_VOLUME = 0.0
+MAX_VOLUME = 1.0
 
 
 @dataclass
@@ -90,6 +94,12 @@ class SoundBank:
     shoot: pygame.mixer.Sound | None
     hit: pygame.mixer.Sound | None
     ship_hit: pygame.mixer.Sound | None
+
+
+@dataclass
+class SoundSettings:
+    enabled: bool = True
+    volume: float = DEFAULT_VOLUME
 
 
 def wrap_position(position: pygame.Vector2) -> None:
@@ -211,9 +221,36 @@ def build_sound_bank() -> SoundBank:
     )
 
 
+def clamp(value: float, minimum: float, maximum: float) -> float:
+    return max(minimum, min(maximum, value))
+
+
+def apply_sound_settings(sound_bank: SoundBank, settings: SoundSettings) -> None:
+    effective_volume = settings.volume if settings.enabled else 0.0
+    for sound in (sound_bank.shoot, sound_bank.hit, sound_bank.ship_hit):
+        if sound is not None:
+            sound.set_volume(effective_volume)
+
+
 def play_sound(sound: pygame.mixer.Sound | None) -> None:
     if sound is not None:
         sound.play()
+
+
+def adjust_volume(sound_bank: SoundBank, settings: SoundSettings, delta: float) -> None:
+    settings.volume = clamp(settings.volume + delta, MIN_VOLUME, MAX_VOLUME)
+    apply_sound_settings(sound_bank, settings)
+
+
+def toggle_sound(sound_bank: SoundBank, settings: SoundSettings) -> None:
+    settings.enabled = not settings.enabled
+    apply_sound_settings(sound_bank, settings)
+
+
+def sound_status_text(settings: SoundSettings) -> str:
+    if not settings.enabled:
+        return f"Sound Off ({round(settings.volume * 100):d}%)"
+    return f"Sound On ({round(settings.volume * 100):d}%)"
 
 
 def emit_particles(
@@ -287,22 +324,56 @@ def create_session() -> tuple[Ship, list[Bullet], list[Particle], int, int, list
     return ship, [], [], level, score, asteroids
 
 
-def load_best_score() -> int:
+def load_save_data() -> dict[str, object]:
     try:
         payload = json.loads(SAVE_PATH.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
-        return 0
+        return {}
 
+    if isinstance(payload, dict):
+        return payload
+    return {}
+
+
+def load_best_score(payload: dict[str, object]) -> int:
     best_score = payload.get("best_score", 0)
     if isinstance(best_score, int) and best_score >= 0:
         return best_score
     return 0
 
 
-def save_best_score(best_score: int) -> None:
+def load_sound_settings(payload: dict[str, object]) -> SoundSettings:
+    sound_payload = payload.get("sound", {})
+    if not isinstance(sound_payload, dict):
+        return SoundSettings()
+
+    enabled = sound_payload.get("enabled", True)
+    volume = sound_payload.get("volume", DEFAULT_VOLUME)
+
+    if not isinstance(enabled, bool):
+        enabled = True
+    if not isinstance(volume, (int, float)):
+        volume = DEFAULT_VOLUME
+
+    return SoundSettings(
+        enabled=enabled,
+        volume=clamp(float(volume), MIN_VOLUME, MAX_VOLUME),
+    )
+
+
+def save_progress(best_score: int, sound_settings: SoundSettings) -> None:
     try:
         SAVE_PATH.write_text(
-            json.dumps({"best_score": max(0, int(best_score))}, indent=2),
+            json.dumps(
+                {
+                    "best_score": max(0, int(best_score)),
+                    "sound": {
+                        "enabled": sound_settings.enabled,
+                        "volume": round(clamp(sound_settings.volume, MIN_VOLUME, MAX_VOLUME), 2),
+                    },
+                },
+                indent=2,
+            ),
             encoding="utf-8",
         )
     except OSError:
@@ -343,11 +414,14 @@ def main() -> None:
     hud_font = pygame.font.SysFont("consolas", 24)
     title_font = pygame.font.SysFont("consolas", 36, bold=True)
     hero_font = pygame.font.SysFont("consolas", 72, bold=True)
+    save_data = load_save_data()
     sound_bank = build_sound_bank()
+    sound_settings = load_sound_settings(save_data)
+    apply_sound_settings(sound_bank, sound_settings)
 
     ship, bullets, particles, level, score, asteroids = create_session()
     attract_asteroids = [spawn_asteroid(random.choice((2, 2, 3, 3))) for _ in range(6)]
-    best_score = load_best_score()
+    best_score = load_best_score(save_data)
     running = True
     state = "title"
     new_high_score = False
@@ -367,6 +441,15 @@ def main() -> None:
                 ship, bullets, particles, level, score, asteroids = create_session()
                 state = "playing"
                 new_high_score = False
+            elif event.type == pygame.KEYDOWN and event.key == pygame.K_m:
+                toggle_sound(sound_bank, sound_settings)
+                save_progress(best_score, sound_settings)
+            elif event.type == pygame.KEYDOWN and event.key in (pygame.K_MINUS, pygame.K_KP_MINUS):
+                adjust_volume(sound_bank, sound_settings, -VOLUME_STEP)
+                save_progress(best_score, sound_settings)
+            elif event.type == pygame.KEYDOWN and event.key in (pygame.K_EQUALS, pygame.K_PLUS, pygame.K_KP_PLUS):
+                adjust_volume(sound_bank, sound_settings, VOLUME_STEP)
+                save_progress(best_score, sound_settings)
 
         keys = pygame.key.get_pressed()
 
@@ -492,7 +575,7 @@ def main() -> None:
                             state = "game_over"
                             if score > best_score:
                                 best_score = score
-                                save_best_score(best_score)
+                                save_progress(best_score, sound_settings)
                                 new_high_score = True
                             else:
                                 new_high_score = False
@@ -550,12 +633,16 @@ def main() -> None:
             best_text = hud_font.render(f"Best {best_score:05d}", True, FOREGROUND)
             lives_text = hud_font.render(f"Lives {ship.lives}", True, FOREGROUND)
             level_text = hud_font.render(f"Level {level}", True, FOREGROUND)
+            sound_text = hud_font.render(sound_status_text(sound_settings), True, MUTED)
             help_text = hud_font.render("Arrows move, Space fires, Esc quits", True, MUTED)
+            sound_help_text = hud_font.render("M toggles sound, -/+ adjusts volume", True, MUTED)
 
             screen.blit(score_text, (24, 20))
             screen.blit(best_text, (24, 50))
             screen.blit(lives_text, (24, 80))
             screen.blit(level_text, (24, 110))
+            screen.blit(sound_text, (24, 140))
+            screen.blit(sound_help_text, (24, HEIGHT - 72))
             screen.blit(help_text, (24, HEIGHT - 42))
 
         if state == "title":
@@ -568,11 +655,15 @@ def main() -> None:
             prompt = hud_font.render("Press Enter or Space to start", True, FOREGROUND)
             best = title_font.render(f"Best Score {best_score:05d}", True, FOREGROUND)
             controls = hud_font.render("Left / Right rotate   Up thrust   Space fire   Esc quit", True, MUTED)
+            sound_controls = hud_font.render("M toggles sound   - / + volume", True, MUTED)
+            sound_status = hud_font.render(sound_status_text(sound_settings), True, FOREGROUND)
 
             screen.blit(title, title.get_rect(center=(WIDTH / 2, HEIGHT / 2 - 120)))
             screen.blit(subtitle, subtitle.get_rect(center=(WIDTH / 2, HEIGHT / 2 - 56)))
             screen.blit(best, best.get_rect(center=(WIDTH / 2, HEIGHT / 2 + 12)))
             screen.blit(prompt, prompt.get_rect(center=(WIDTH / 2, HEIGHT / 2 + 72)))
+            screen.blit(sound_status, sound_status.get_rect(center=(WIDTH / 2, HEIGHT / 2 + 112)))
+            screen.blit(sound_controls, sound_controls.get_rect(center=(WIDTH / 2, HEIGHT - 102)))
             screen.blit(controls, controls.get_rect(center=(WIDTH / 2, HEIGHT - 72)))
 
         if state == "game_over":
