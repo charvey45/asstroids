@@ -17,7 +17,6 @@ ACCENT = (255, 191, 105)
 WARNING = (255, 107, 107)
 MUTED = (170, 181, 205)
 SAVE_PATH = Path(__file__).with_name(".asteroids-save.json")
-LEGACY_SAVE_PATH = Path(__file__).with_name(".astroids-save.json")
 
 SHIP_TURN_SPEED = 220
 SHIP_ACCELERATION = 320
@@ -337,10 +336,7 @@ def read_save_payload(path: Path) -> dict[str, object]:
 
 
 def load_save_data() -> dict[str, object]:
-    payload = read_save_payload(SAVE_PATH)
-    if payload:
-        return payload
-    return read_save_payload(LEGACY_SAVE_PATH)
+    return read_save_payload(SAVE_PATH)
 
 
 def load_best_score(payload: dict[str, object]) -> int:
@@ -383,15 +379,8 @@ def save_progress(best_score: int, sound_settings: SoundSettings) -> None:
             json.dumps(payload, indent=2),
             encoding="utf-8",
         )
-        saved = True
     except OSError:
         pass
-
-    if saved and LEGACY_SAVE_PATH.exists() and LEGACY_SAVE_PATH != SAVE_PATH:
-        try:
-            LEGACY_SAVE_PATH.unlink()
-        except OSError:
-            pass
 
 
 def update_particles(particles: list[Particle], dt: float) -> None:
