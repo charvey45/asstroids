@@ -28,6 +28,20 @@ The result is a repo that is small enough to understand quickly, but complete en
 - Local persistence for best score and sound settings
 - Particle bursts for asteroid and ship destruction
 
+## Screenshots
+
+### Title Screen
+
+![Astroids title screen](docs/screenshots/title-screen.png)
+
+### Gameplay
+
+![Astroids gameplay screenshot](docs/screenshots/gameplay-screen.png)
+
+### Game Over
+
+![Astroids game over screen](docs/screenshots/game-over-screen.png)
+
 ## AI-Assisted Workflow
 
 This project was built collaboratively with an AI coding agent. The human side provided direction, chose tradeoffs, reviewed the results, and decided what to keep. The agent accelerated implementation, edits, and cleanup.
