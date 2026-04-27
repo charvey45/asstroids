@@ -46,6 +46,7 @@ DEFAULT_VOLUME = 0.10
 VOLUME_STEP = 0.05
 MIN_VOLUME = 0.0
 MAX_VOLUME = 1.0
+SAVE_WARNING_DURATION = 3.0
 
 
 @dataclass
@@ -128,7 +129,7 @@ def spawn_asteroid(size: int, avoid: pygame.Vector2 | None = None) -> Asteroid:
             random.uniform(0, WIDTH),
             random.uniform(0, HEIGHT),
         )
-        if avoid is None or position.distance_to(avoid) > 180:
+        if avoid is None or distance_with_wrap(position, avoid) > 180:
             break
 
     speed_low, speed_high = ASTEROID_SPEED[size]
@@ -365,7 +366,7 @@ def load_sound_settings(payload: dict[str, object]) -> SoundSettings:
     )
 
 
-def save_progress(best_score: int, sound_settings: SoundSettings) -> None:
+def save_progress(best_score: int, sound_settings: SoundSettings) -> bool:
     payload = {
         "best_score": max(0, int(best_score)),
         "sound": {
@@ -373,14 +374,14 @@ def save_progress(best_score: int, sound_settings: SoundSettings) -> None:
             "volume": round(clamp(sound_settings.volume, MIN_VOLUME, MAX_VOLUME), 2),
         },
     }
-    saved = False
     try:
         SAVE_PATH.write_text(
             json.dumps(payload, indent=2),
             encoding="utf-8",
         )
     except OSError:
-        pass
+        return False
+    return True
 
 
 def update_particles(particles: list[Particle], dt: float) -> None:
@@ -428,6 +429,12 @@ def main() -> None:
     running = True
     state = "title"
     new_high_score = False
+    save_warning_timer = 0.0
+
+    def save_current_progress() -> None:
+        nonlocal save_warning_timer
+        if not save_progress(best_score, sound_settings):
+            save_warning_timer = SAVE_WARNING_DURATION
 
     while running:
         dt = clock.tick(FPS) / 1000
@@ -446,15 +453,16 @@ def main() -> None:
                 new_high_score = False
             elif event.type == pygame.KEYDOWN and event.key == pygame.K_m:
                 toggle_sound(sound_bank, sound_settings)
-                save_progress(best_score, sound_settings)
+                save_current_progress()
             elif event.type == pygame.KEYDOWN and event.key in (pygame.K_MINUS, pygame.K_KP_MINUS):
                 adjust_volume(sound_bank, sound_settings, -VOLUME_STEP)
-                save_progress(best_score, sound_settings)
+                save_current_progress()
             elif event.type == pygame.KEYDOWN and event.key in (pygame.K_EQUALS, pygame.K_PLUS, pygame.K_KP_PLUS):
                 adjust_volume(sound_bank, sound_settings, VOLUME_STEP)
-                save_progress(best_score, sound_settings)
+                save_current_progress()
 
         keys = pygame.key.get_pressed()
+        save_warning_timer = max(0.0, save_warning_timer - dt)
 
         if state == "title":
             update_asteroids(attract_asteroids, dt)
@@ -508,6 +516,10 @@ def main() -> None:
                 bullets.remove(bullet)
                 asteroids.remove(hit)
                 score += SCORE_VALUES[hit.size]
+                if score > best_score:
+                    best_score = score
+                    new_high_score = True
+                    save_current_progress()
                 particles.extend(
                     emit_particles(
                         hit.position,
@@ -576,12 +588,6 @@ def main() -> None:
                         ship.lives -= 1
                         if ship.lives <= 0:
                             state = "game_over"
-                            if score > best_score:
-                                best_score = score
-                                save_progress(best_score, sound_settings)
-                                new_high_score = True
-                            else:
-                                new_high_score = False
                         else:
                             preserved_lives = ship.lives
                             ship = reset_ship()
@@ -685,6 +691,10 @@ def main() -> None:
             screen.blit(best, best.get_rect(center=(WIDTH / 2, HEIGHT / 2 + 36)))
             screen.blit(banner, banner.get_rect(center=(WIDTH / 2, HEIGHT / 2 + 70)))
             screen.blit(retry, retry.get_rect(center=(WIDTH / 2, HEIGHT / 2 + 108)))
+
+        if save_warning_timer > 0:
+            save_warning = hud_font.render("Save unavailable", True, WARNING)
+            screen.blit(save_warning, save_warning.get_rect(topright=(WIDTH - 24, 20)))
 
         pygame.display.flip()
 
